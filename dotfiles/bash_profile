@@ -1,0 +1,16 @@
+# 登录 shell 入口（物理屏 tty1 自动登录 + SSH 登录都会执行）
+
+if [ "$(tty)" = "/dev/tty1" ] && [ -z "$TMUX" ]; then
+    # 物理屏：作为 SSH 会话的镜像展示屏，保持空闲
+    # （黑底绿字由内核 vt 调色板控制，SSH 会话内容会实时镜像到这里）
+    exec sleep infinity
+fi
+
+# SSH 交互登录：整个会话实时镜像到树莓派屏幕（无感，无需任何额外命令）
+# 所有输入回显、命令输出、交互程序都会同步显示到屏幕
+if [ -n "$SSH_TTY" ] && [ -z "$TMUX" ]; then
+    exec script -q -f /dev/tty1
+fi
+
+# 其他情况：正常走 .bashrc
+[ -f "$HOME/.bashrc" ] && . "$HOME/.bashrc"
