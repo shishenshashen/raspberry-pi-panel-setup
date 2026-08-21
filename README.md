@@ -34,3 +34,7 @@ cp dotfiles/bash_profile ~/.bash_profile
 cp dotfiles/bashrc ~/.bashrc
 # 然后重启
 ```
+
+## 认证方式
+- SSH 密钥推送：git@github.com:shishenshashen/pi-config.git (已配置)
+
