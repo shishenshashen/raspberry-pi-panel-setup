@@ -11,6 +11,10 @@
 
 ![仪表盘 v5](screenshots/fb-v5-panel.png)
 
+**仪表盘截图**（另一版本）：
+
+![仪表盘截图](screenshots/INIT-07-panel-info-dashboard.png)
+
 **配色校准**（证明面板映射 = 纯反相，无通道错位）：
 
 ![配色校准](screenshots/INIT-07-color-calibration.png)
