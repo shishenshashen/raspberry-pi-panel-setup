@@ -1,92 +1,112 @@
 # pi-config
 
-Raspberry Pi 4B (8 GB, Debian 13 trixie) configuration backup for a headless
-setup with a **Waveshare 3.5" SPI LCD (ILI9486, waveshare35b-v2)** and a
-live-refresh console dashboard.
+Raspberry Pi 4B (8 GB, Debian 13 trixie) 完整配置备份 + 一键恢复。
+Waveshare 3.5" SPI LCD (ILI9486, waveshare35b-v2) + 控制台仪表盘。
 
-Tested on kernel `6.18.50+rpt-rpi-v8` (2026-09-20).
-
----
-
-## Repository layout
-
-```
-boot/
-  config.txt          kernel/firmware config (SPI + overlay)
-  cmdline.txt         boot command line (palette + fbcon font)
-dotfiles/             bash_profile / bashrc session mirror (optional)
-panel/                console dashboard + custom font
-  pi-panel-info           dashboard renderer (Python 3)
-  pi-panel-info.service   systemd unit
-  pi-panel-info-install.sh one-command installer
-  mkfont614.py            rebuilds 6x12 → 6x14 PSF2 font
-  wdf-panel-6x14.psf.gz  the custom 6x14 console font
-tools/                diagnostic utilities
-  fbcheck.py              read /dev/fb0 → histogram + PNG
-  sgrprobe*.py            probe Linux console SGR intensity bit
-  console-palette.py      write 16-colour palette via OSC
-  console-demo.py         colour demo page
-screenshots/          what the panel looks like
-```
+测试环境：kernel `6.18.50+rpt-rpi-v8`，2026-09-20。
 
 ---
 
-## Display: Waveshare 3.5" SPI LCD
-
-### Hardware
-
-- ILI9486 controller on SPI0, 480×320 pixels
-- RST = GPIO 25, DC = GPIO 24, CS1 carries ADS7846 touch
-- Panel colour mapping (measured): **displayed = 255 − framebuffer** (plain
-  per-channel inversion, no channel swap).  fb `000000` → white screen;
-  fb `ffffff` → black screen.
-
-### Device-tree overlay
-
-The official Raspberry Pi firmware (as of 2026-09) does **not** ship a
-`waveshare35b-v2.dtbo`.  Build it from the public source:
+## 一键恢复
 
 ```bash
-# on the Pi
+git clone https://github.com/shishenshashen/pi-config.git
+cd pi-config
+sudo bash restore-all.sh
+```
+
+这条命令会：
+1. 恢复 `boot/config.txt` + `cmdline.txt`（SPI overlay + 反色调色板 + fbcon 字体）
+2. 安装 `waveshare35b-v2.dtbo` 到 `/boot/firmware/overlays/`
+3. 安装自定义 6x14 字体 + `pi-panel-info` 仪表盘 + systemd 服务
+4. 恢复 `/etc/default/console-setup`
+
+自动检测 PARTUUID 差异并修补（换卡时不用手动改 cmdline.txt）。
+
+如果只恢复仪表盘（boot 配置已手动改好）：
+```bash
+sudo bash restore-all.sh --skip-boot
+```
+
+恢复完需要重启（或手动 `sudo dtoverlay waveshare35b-v2 rotate=270` 热加载）。
+
+---
+
+## 仓库结构
+
+```
+restore-all.sh          一键恢复脚本（入口）
+
+boot/
+  running/
+    config.txt          正在用的内核配置（SPI + overlay）
+    cmdline.txt         正在用的启动参数（调色板 + fbcon）
+  config.txt            出厂原始备份
+  cmdline.txt           出厂原始备份
+
+overlays/
+  waveshare35b-v2.dtbo  编译好的 SPI 屏 overlay（直接可用）
+
+panel/                  控制台仪表盘
+  pi-panel-info             仪表盘渲染器（Python 3）
+  pi-panel-info.service     systemd 单元
+  pi-panel-info-install.sh  仪表盘安装脚本
+  mkfont614.py              字体构建器（6x12 → 6x14）
+  wdf-panel-6x14.psf.gz    自定义 6x14 控制台字体
+
+etc/
+  console-setup         正在用的 /etc/default/console-setup
+
+dotfiles/               SSH 会话镜像到屏（可选）
+  bash_profile
+  bashrc
+
+tools/                  诊断工具
+  fbcheck.py                帧缓冲读取 → 直方图 + PNG
+  sgrprobe*.py              Linux 控制台 SGR 高亮位探针
+  console-palette.py        OSC 调色板写入器
+  console-demo.py           色彩演示页
+
+screenshots/            面板实拍
+  fb-v5-panel.png           v5 最终仪表盘
+  fb-v4a-panel.png          --loop 时钟刷新对比 A
+  fb-v4b-panel.png          --loop 时钟刷新对比 B
+  INIT-07-color-calibration.png  配色校准证明
+  INIT-07-panel-info-dashboard.png  仪表盘截图
+```
+
+---
+
+## 硬件：Waveshare 3.5" SPI LCD
+
+- ILI9486 控制器，SPI0，480×320 像素
+- RST = GPIO 25, DC = GPIO 24, CS1 上是 ADS7846 触摸
+- **面板色彩映射（实测）**：显示色 = 255 − framebuffer 值（纯反相，无通道错位）
+  - fb `000000` → 白屏；fb `ffffff` → 黑屏
+
+### overlay 来源
+
+官方固件不含 `waveshare35b-v2.dtbo`。仓库里已放编译好的（`overlays/`），
+如需重编：
+
+```bash
 git clone https://github.com/swkim01/waveshare-dtoverlays.git
-cd waveshare-dtoverlays
 dtc -@ -I dts -O dtb -o waveshare35b-v2.dtbo waveshare35b-v2.dts
-sudo cp waveshare35b-v2.dtbo /boot/firmware/overlays/
 ```
 
-### config.txt additions
-
-```ini
-[all]
-dtparam=spi=on
-dtoverlay=waveshare35b-v2,rotate=270
-```
-
-### cmdline.txt additions
-
-```
-fbcon=font:VGA8x16
-vt.default_red=0xFF,0x55,0xFF,0x55,0xFF,0x55,0xFF,0xFF,0xAA,0x00,0xAA,0x00,0xAA,0x00,0xAA,0x00
-vt.default_grn=0xFF,0xFF,0x55,0xAA,0xFF,0xFF,0x55,0x00,0xAA,0xAA,0x00,0x00,0xAA,0xAA,0x00,0x00
-vt.default_blu=0xFF,0xFF,0xFF,0xFF,0x55,0x55,0x55,0xFF,0xAA,0xAA,0xAA,0xAA,0x00,0x00,0x00,0x00
-```
-
-Remove `quiet splash` if present.  The `vt.default_*` values are the
-**inverted** standard VGA palette (because the panel inverts the framebuffer).
-
-### Runtime hot-load (no reboot)
+### 运行时热加载（不重启）
 
 ```bash
 sudo dtoverlay waveshare35b-v2 rotate=270
-# verify: configfs status = applied
-cat /sys/kernel/config/device-tree/overlays/0_waveshare35b-v2/status
+# 验证：
+cat /sys/kernel/config/device-tree/overlays/0_waveshare35b-v2/status  # 应显示 applied
 ```
 
 ---
 
-## Console dashboard (pi-panel-info)
+## 控制台仪表盘
 
-A two-line status screen that lives on `/dev/tty1`:
+两行状态屏，常驻 `/dev/tty1`：
 
 ```
 2026-09-20 16:43:04  up 1h46m  temp 58.9C  mem 0.9G/7.6G
@@ -96,98 +116,66 @@ services  dsh ok   cable-proxy ok   docker ok
 docker    0 running / 0 total containers  load      0.38 0.62 2.64
 ```
 
-- **Refresh**: 1-second clock tick, 10-second slow-metric refresh
-  (configurable via `--interval N`).  Flicker-free per-row repaint.
-- **Font**: custom 6×14 PSF2 (built from Lat15-Terminus12x6 with 1 px
-  padding top/bottom → 80×22 grid on the 480×320 panel).
-- **Colours**: white labels, bright-green body, grey separator, red alerts.
-- **Services monitored**: dsh, dsh-cable-proxy.socket, docker (edit the
-  `SERVICES` tuple in the script to change).
+- **刷新**：1 秒时钟 + 10 秒慢指标（`--interval N` 可调），无闪烁逐行重绘
+- **字体**：自定义 6×14（Terminus 6×12 上下各垫 1px → 80×22 网格）
+- **配色**：白标签、亮绿正文、灰分隔线、红告警
+- **监控服务**：dsh、dsh-cable-proxy.socket、docker（改 `SERVICES` 元组）
 
-### Install
-
+单独装仪表盘（不动 boot）：
 ```bash
-# copy the panel/ directory to the Pi, then:
-cd panel
-sudo bash pi-panel-info-install.sh
-```
-
-The installer:
-1. Copies the 6×14 font to `/usr/local/share/consolefonts/`
-2. Writes `/etc/default/console-setup` (backs up the old one)
-3. Installs `pi-panel-info` to `/usr/local/bin/`
-4. Installs and enables the systemd service
-
-### Uninstall
-
-```bash
-sudo systemctl disable --now pi-panel-info.service
-sudo rm /etc/systemd/system/pi-panel-info.service /usr/local/bin/pi-panel-info
-sudo cp /etc/default/console-setup.bak-* /etc/default/console-setup
-sudo setupcon
+cd panel && sudo bash pi-panel-info-install.sh
 ```
 
 ---
 
-## Linux console colour gotchas
+## Linux 控制台踩坑
 
-### SGR intensity bit
+### SGR 高亮位 bug
 
-The Linux console stores 90–97 (bright colours) as a separate intensity bit,
-independent of the base colour set by 30–37.  A sequence like `\033[97m`
-followed by `\033[37m` changes only the base colour — the intensity bit
-stays set, so text renders bright white instead of the intended colour.
+Linux 控制台把 90–97（亮色）存为独立的高亮位，和 30–37（基色）分开。
+`\033[97m` 后紧跟 `\033[37m` 只改基色不清高亮，正文仍显示白色。
 
-**Fix**: always reset before setting body text colour:
+**修复**：设色前先复位
 ```python
-BODY = "\033[0;37m"   # reset first, then set colour
+BODY = "\033[0;37m"   # 先 \033[0m 全复位，再设色
 ```
 
-### Framebuffer inversion
+### 帧缓冲反相
 
-Because the panel displays `255 − fb`, any screenshot tool that reads
-`/dev/fb0` directly (like `tools/fbcheck.py`) must invert the pixels to
-produce a PNG that matches what you see on screen.  The script writes two
-files: `-raw.png` (framebuffer as-is) and `-panel.png` (inverted, matches
-the physical display).
+面板显示 `255 − fb`，所以读 `/dev/fb0` 的截图工具必须反色才能还原肉眼所见。
+`tools/fbcheck.py` 输出两个文件：`-raw.png`（fb 原样）和 `-panel.png`（反相后）。
+
+### fb_ili9486 无 blank
+
+`/sys/class/graphics/fb0/blank` 读 4、写 0 报 I/O error 是正常的——
+上游 `fb_ili9486` 没实现 `.blank` 方法，面板从未被下 display-off。
+
+### SPI DMA
+
+`/proc/interrupts` 里 SPI 计数为 0 不代表没传数据（spi-bcm2835 走 DMA），
+要看 `/sys/bus/spi/devices/spi0.0/statistics/bytes`（一帧 ≈ 307 KB）。
 
 ---
 
-## Diagnostic tools
+## 回滚
 
-| Script | Purpose |
+所有改动可逆，不需要格式化 SD 卡：
+
+| 改了什么 | 怎么退 |
 |---|---|
-| `fbcheck.py <tag>` | Read `/dev/fb0`, print colour histogram, write raw + panel PNGs |
-| `sgrprobe.py` | Demonstrate the 90–97 intensity bit persistence bug |
-| `sgrprobe2.py` | Variant with explicit reset sequences |
-| `sgrprobe3.py` | Pixel-counting probe (reads fb after writing SGR) |
-| `console-palette.py` | Write the 16-colour inverted palette via OSC to `/dev/tty1` |
-| `console-demo.py` | Render a colour demo page for visual calibration |
+| overlay 已加载 | `sudo dtoverlay -r waveshare35b-v2` |
+| config.txt | `sudo cp boot/config.txt /boot/firmware/config.txt`（出厂原版） |
+| cmdline.txt | `sudo cp boot/cmdline.txt /boot/firmware/cmdline.txt`（出厂原版） |
+| 字体 | `sudo cp etc/console-setup /etc/default/console-setup && sudo setupcon` |
+| 仪表盘服务 | `sudo systemctl disable --now pi-panel-info.service` |
+| dtbo 文件 | `sudo rm /boot/firmware/overlays/waveshare35b-v2.dtbo` |
+
+`restore-all.sh` 每次运行前自动备份当前文件为 `.bak-<时间戳>`。
 
 ---
 
-## Rollback reference
+## 无关的显示输出
 
-All changes made on 2026-09-20 are reversible without a reboot:
-
-| What | Undo |
-|---|---|
-| Overlay loaded | `sudo dtoverlay -r waveshare35b-v2` |
-| config.txt | `sudo cp /boot/firmware/config.txt.bak-20260920-display /boot/firmware/config.txt` |
-| cmdline.txt (overlay) | `sudo cp /boot/firmware/cmdline.txt.bak-20260920-display /boot/firmware/cmdline.txt` |
-| cmdline.txt (palette) | `sudo cp /boot/firmware/cmdline.txt.bak-20260920-palette /boot/firmware/cmdline.txt` |
-| Console font | `sudo cp /etc/default/console-setup.bak-20260920-selfont /etc/default/console-setup && sudo setupcon` |
-| Dashboard service | `sudo systemctl disable --now pi-panel-info.service && sudo rm /etc/systemd/system/pi-panel-info.service /usr/local/bin/pi-panel-info` |
-| DTBO file | `sudo rm /boot/firmware/overlays/waveshare35b-v2.dtbo` |
-
----
-
-## Notes
-
-- `fb_ili9486` does not implement `.blank` — `/sys/class/graphics/fb0/blank`
-  reads 4 and writing 0 returns I/O error.  This is normal, not a fault.
-- SPI DMA means `/proc/interrupts` shows 0 for SPI; use
-  `/sys/bus/spi/devices/spi0.0/statistics/bytes` to verify data flow
-  (one frame ≈ 307 KB for 480×320×2).
-- `card1-HDMI-A-1` / `card1-HDMI-A-2` showing disconnected is expected —
-  they are HDMI outputs, unrelated to the SPI panel.
+- `card1-HDMI-A-1` / `card1-HDMI-A-2` 显示 disconnected 是正常的——那是 HDMI 口，
+  跟 SPI 屏无关
+- 无 DSI 显示
