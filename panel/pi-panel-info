@@ -1,0 +1,225 @@
+#!/usr/bin/env python3
+"""Status screen for the 3.5" ILI9486 SPI panel (tty1 console).
+
+Two-line header (date/uptime/temp/mem/disk, ip/wlan0), then services and the
+docker/load line under a hairline separator.  In --loop mode the clock ticks
+every second while the slow metrics are re-read every --interval seconds
+(default 10).  Panel fact, measured 2026-09-20: on-screen colour = 255 -
+framebuffer value, so the 16-entry palette below is the inverted one; index 7
+(default text) shows as bright green 00ff00.
+"""
+import fcntl
+import os
+import re
+import struct
+import subprocess
+import sys
+import termios
+import time
+
+TTY = "/dev/tty1"
+FALLBACK = (22, 80)            # rows, cols - used only if the ioctl fails
+MARGIN = 1                     # blank columns on the left and right
+LABEL = 10                     # width of the label column
+COL2 = 40                      # column where the second label column starts
+INTERVAL = 10                  # seconds between slow-metric refreshes
+
+SERVICES = (("dsh", "dsh.service"),
+            ("cable-proxy", "dsh-cable-proxy.socket"),
+            ("docker", "docker"))
+
+PALETTE = ["ffffff", "55ffff", "ff55ff", "55aaff", "ffff55", "55ff55", "ff5555", "ff00ff",
+           "aaaaaa", "00aaaa", "aa00aa", "0000aa", "aaaa00", "00aa00", "aa0000", "000000"]
+
+RESET = "\033[0m"
+HEAD = "\033[97m"              # palette 15 -> #ffffff
+DIM = "\033[90m"               # palette 8  -> #555555
+ALERT = "\033[91m"             # palette 9  -> #ff5555
+# The Linux console keeps the intensity bit set by 90-97, so a following plain
+# 37/39 stays bright white - body text has to reset first (measured 2026-09-20).
+BODY = "\033[0;37m"            # palette 7  -> bright green
+
+
+def run(cmd, default="-"):
+    try:
+        p = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=6)
+        return p.stdout.strip() or default
+    except Exception:
+        return default
+
+
+def ipv4(dev):
+    m = re.search(r"inet (\S+)", run("ip -4 -o addr show dev %s" % dev, ""))
+    return m.group(1) if m else "-"
+
+
+def default_dev():
+    m = re.search(r"default via \S+ dev (\S+)", run("ip -4 route show default", ""))
+    return m.group(1) if m else "-"
+
+
+def mem_kb():
+    d = {}
+    try:
+        for line in open("/proc/meminfo"):
+            k, v = line.split(":", 1)
+            d[k] = int(v.split()[0])
+    except Exception:
+        pass
+    return d
+
+
+def short_uptime():
+    try:
+        secs = int(float(open("/proc/uptime").read().split()[0]))
+    except Exception:
+        return "-"
+    d, rem = divmod(secs, 86400)
+    h, rem = divmod(rem, 3600)
+    m = rem // 60
+    if d:
+        return "%dd%dh" % (d, h)
+    if h:
+        return "%dh%dm" % (h, m)
+    return "%dm" % m
+
+
+def disk():
+    f = run("df -h / --output=size,used,avail,pcent | tail -1", "").split()
+    return "%s/%s free %s" % (f[3], f[0], f[2]) if len(f) >= 4 else "-"
+
+
+def loadavg():
+    try:
+        return " ".join(open("/proc/loadavg").read().split()[:3])
+    except Exception:
+        return "-"
+
+
+def temp():
+    m = re.search(r"=([\d.]+)", run("vcgencmd measure_temp", ""))
+    return "%sC" % m.group(1) if m else "-"
+
+
+def services():
+    states = run("systemctl is-active " + " ".join(u for _, u in SERVICES), "-").split()
+    return [(name, states[i] if i < len(states) else "unknown")
+            for i, (name, _) in enumerate(SERVICES)]
+
+
+def containers():
+    return "%s running / %s total" % (
+        run("docker ps -q | wc -l", "?").strip(), run("docker ps -aq | wc -l", "?").strip())
+
+
+def collect():
+    mi = mem_kb()
+    total = mi.get("MemTotal", 0) / 1048576.0
+    used = (mi.get("MemTotal", 0) - mi.get("MemAvailable", 0)) / 1048576.0
+    return {
+        "uptime": short_uptime(),
+        "eth": ipv4("eth0"),
+        "wlan": ipv4("wlan0"),
+        "defdev": default_dev(),
+        "mem": "%.1fG/%.1fG" % (used, total),
+        "disk": disk(),
+        "temp": temp(),
+        "services": services(),
+        "docker": containers(),
+        "load": loadavg(),
+    }
+
+
+def kv(label_a, val_a, label_b=None, val_b=None):
+    segs = [(label_a.ljust(LABEL), HEAD), (val_a, BODY)]
+    if label_b is not None:
+        pad = max(2, COL2 - LABEL - len(val_a))
+        segs += [(" " * pad, None), (label_b.ljust(LABEL), HEAD), (val_b, BODY)]
+    return segs
+
+
+def wrap_tokens(tokens, avail):
+    lines, cur, cur_len = [], [], 0
+    for text, style in tokens:
+        if cur and cur_len + len(text) > avail:
+            lines.append(cur)
+            cur, cur_len = [], 0
+        cur.append((text, style))
+        cur_len += len(text)
+    lines.append(cur)
+    return lines
+
+
+def rows(d, width):
+    head = [(time.strftime("%Y-%m-%d %H:%M:%S"), HEAD)]
+    for label, val in (("up", d["uptime"]), ("temp", d["temp"]), ("mem", d["mem"])):
+        head += [("  %s " % label, HEAD), (val, BODY)]
+    eth = "%s eth0%s" % (d["eth"], " (default)" if d["defdev"] == "eth0" else "")
+    net = [("ip ", HEAD), (eth, BODY),
+           ("  wlan0 ", HEAD), (d["wlan"], BODY),
+           ("  disk ", HEAD), (d["disk"], BODY)]
+    svc = [("%s %s   " % (name, "ok" if st == "active" else st),
+            BODY if st == "active" else ALERT) for name, st in d["services"]]
+    svc_lines = wrap_tokens(svc, width - LABEL)
+    svc_rows = [[("services".ljust(LABEL), HEAD)] + svc_lines[0]]
+    svc_rows += [[(" " * LABEL, None)] + line for line in svc_lines[1:]]
+    return ([head, net, [("=" * width, DIM)]]
+            + svc_rows + [kv("docker", "%s containers" % d["docker"], "load", d["load"])])
+
+
+def render_line(segs, width):
+    out, used = "", 0
+    for text, style in segs:
+        text = text[:max(0, width - used)]
+        if text:
+            out += (style or "") + text
+            used += len(text)
+    return " " * MARGIN + out.rstrip() + RESET
+
+
+def paint(fd, lines, total_rows, width, first):
+    seq = ""
+    if first:
+        seq += "".join("\033]P%x%s" % (i, v) for i, v in enumerate(PALETTE)) + "\033[2J"
+    for i, segs in enumerate(lines[:total_rows], 1):
+        seq += "\033[%d;1H" % i + render_line(segs, width) + "\033[K"
+    seq += "\033[%d;1H\033[J" % min(len(lines) + 1, total_rows)
+    os.write(fd, seq.encode("ascii", "replace"))
+
+
+def arg_value(flag, default):
+    if flag in sys.argv:
+        i = sys.argv.index(flag)
+        if i + 1 < len(sys.argv):
+            return sys.argv[i + 1]
+    return default
+
+
+def main():
+    loop = "--loop" in sys.argv
+    interval = int(arg_value("--interval", INTERVAL))
+    fd = os.open(TTY, os.O_WRONLY | os.O_NOCTTY)
+    try:
+        try:
+            r, c = struct.unpack("HH", fcntl.ioctl(fd, termios.TIOCGWINSZ, b"\0" * 8)[:4])
+            if not r or not c:
+                r, c = FALLBACK
+        except Exception:
+            r, c = FALLBACK
+        width = c - 2 * MARGIN
+        data, stamp = None, 0.0
+        first = True
+        while True:
+            if data is None or time.time() - stamp >= interval:
+                data, stamp = collect(), time.time()
+            paint(fd, rows(data, width), r, width, first)
+            first = False
+            if not loop:
+                break
+            time.sleep(1)
+    finally:
+        os.close(fd)
+
+
+if __name__ == "__main__":
+    main()

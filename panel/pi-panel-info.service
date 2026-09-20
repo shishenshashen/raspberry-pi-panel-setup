@@ -1,0 +1,15 @@
+[Unit]
+Description=SPI panel status screen (tty1 console, live refresh)
+Documentation=file:/usr/local/bin/pi-panel-info
+After=network-online.target docker.service getty@tty1.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStartPre=-/usr/bin/setfont -C /dev/tty1 /usr/local/share/consolefonts/wdf-panel-6x14.psf.gz
+ExecStart=/usr/local/bin/pi-panel-info --loop
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
