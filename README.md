@@ -5,6 +5,21 @@ Waveshare 3.5" SPI LCD (ILI9486, waveshare35b-v2) + 控制台仪表盘。
 
 测试环境：kernel `6.18.50+rpt-rpi-v8`，2026-09-20。
 
+## 面板效果
+
+**仪表盘 v5**（6×14 字体，80×22 网格，黑底白标签绿数值）：
+
+![仪表盘 v5](screenshots/fb-v5-panel.png)
+
+**配色校准**（证明面板映射 = 纯反相，无通道错位）：
+
+![配色校准](screenshots/INIT-07-color-calibration.png)
+
+**--loop 实时刷新**（左 16:39:36 → 右 16:39:40，时钟每秒 tick）：
+
+![刷新对比A](screenshots/fb-v4a-panel.png)
+
+![刷新对比B](screenshots/fb-v4b-panel.png)
 ---
 
 ## 一键恢复
