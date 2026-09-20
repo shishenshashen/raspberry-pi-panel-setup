@@ -1,0 +1,23 @@
+# Backup files
+*.bak-*
+*.bak
+
+# Temp files
+*~
+*.tmp
+*.swp
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+
+# Logs
+*.log
